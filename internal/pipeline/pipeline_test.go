@@ -112,6 +112,16 @@ func TestRunSavesAfterCancel(t *testing.T) {
 	}
 }
 
+func TestRunCancelled(t *testing.T) {
+	r := newRig(t, "http://a.test/ok")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := Run(ctx, testConfig(t), r.deps, Options{DryRun: true, Now: testNow})
+	if !errors.Is(err, context.Canceled) || res.EPUB != nil {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func TestRunDryRun(t *testing.T) {
 	r := newRig(t, "http://a.test/ok")
 	r.deps.Archive, r.deps.Mailer = nil, nil

@@ -113,6 +113,11 @@ func Run(ctx context.Context, cfg *config.Config, d Deps, opt Options) (*Result,
 
 	got := collect(ctx, cfg, d, picks, picksWanted)
 	res.Rejected = len(got.Rejected)
+	// A cancelled run (signal, run timeout) stops here: what was gathered so
+	// far is not today's edition.
+	if err := ctx.Err(); err != nil {
+		return res, fmt.Errorf("extract: %w", err)
+	}
 	if len(got.Articles) == 0 {
 		return res, ErrNoArticles
 	}
