@@ -139,8 +139,11 @@ intentional (control over the XHTML).
 ## Recipes
 
 - **Add a source:** implement `sources.Source` (`Name`, `Fetch`) returning `news.Candidate`s
-  with `URL` passed through `news.CleanURL`. Add its struct to `config.Sources` with defaults in
-  `applyDefaults`, register it in `sources.FromConfig`, and add a parsing test with an inline payload.
+  with `URL` passed through `news.CleanURL`; fetch through `sources.get` (Accept header, 4 MiB cap,
+  non-2xx → error) and give zero-valued fields the defaults inside the source. Add its config struct
+  to `sources.Config` (JSON tags as in the config file; `internal/config` embeds or maps it), register
+  it in `sources.FromConfig` (order matters: it is the output order of `FetchAll`), and add a test
+  with an inline payload served by `httptest` through the loopback-only `testClient`.
 - **Change the ranking:** the prompt lives in `rank/openrouter.go` (`systemPrompt`/`userPrompt`).
   `parsePicks` tolerates code fences and prose around the JSON; keep it that way.
   Validate offline with `make bench`; the mock LLM is in `tools/fixtureserver`.
