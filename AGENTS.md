@@ -1,4 +1,4 @@
-# AGENTS.mdscheduler
+# AGENTS.md
 
 Guide for coding agents (and humans) working in this repo.
 
@@ -26,11 +26,16 @@ go test -run='^$' -fuzz=FuzzSanitize -fuzztime=60s ./internal/extract
 EXTRACT_CORPUS=<dir> EXTRACT_EPUB_OUT=$PWD/dist go test -run TestCorpus ./internal/extract
 for f in dist/corpus-*.epub; do epubcheck "$f"; done
 
+cp config.example.json config.json   # then edit; secrets: OPENROUTER_API_KEY, SMTP_PASSWORD
 go run ./cmd/news-paper -config config.json sources                      # today's candidates (TSV)
 go run ./cmd/news-paper -config config.json extract <URL>                # debug extraction for one URL
 go run ./cmd/news-paper -config config.json run -dry-run -out today.epub # full edition, not sent
+go run ./cmd/news-paper -config config.json run -archive dist/editions    # send; once per day
+go run ./cmd/news-paper -config config.json send <file.epub>             # resend (recovery path)
+# -v (before the command) enables debug logs
 
 make bench PAGES=<dir>          # full pipeline offline against tools/fixtureserver
+LLM=fail make bench PAGES=<dir> # same, with the mock LLM down (heuristic fallback)
 epubcheck dist/bench.epub       # required after touching epub/ or extract/sanitize.go
 ```
 
@@ -41,23 +46,24 @@ epubcheck dist/bench.epub       # required after touching epub/ or extract/sanit
 
 ```
 cmd/news-paper ──> internal/pipeline ──> sources → rank → extract → epub → mail
-                                      └────── uses: config, news, net/http, state, xmlx, memstat
+                                      └────── uses: config, state, archive, httpx, news
 ```
 
 | Package | Responsibility |
 |---|---|
-| `cmd/news-paper` | Thin CLI: flags, config loading, global timeout, signals. No business logic. |
-| `internal/pipeline` | Orchestrates the stages. **No I/O of its own**, so both the CLI and the Lambda handler can call it. |
+| `cmd/news-paper` | Thin CLI (`run`, `sources`, `extract`, `send`, `version`): flags, config loading, global timeout, signals. No business logic. |
+| `internal/pipeline` | `Run(ctx, cfg, Deps, Options)` orchestrates the stages. **No I/O of its own** (everything comes in through `Deps`), so both the CLI and the Lambda handler can call it. Never imports `os`, `flag` or AWS. |
 | `internal/sources` | `Source` interface. HN via Algolia (1 request), Lobsters `hottest.json`, RSS/Atom with a custom `encoding/xml` parser. |
 | `internal/rank` | `Prefilter` (dedupe/seen/deny/non-HTML), `OpenRouter`, `Heuristic`, `WithFallback` (top-up + per-domain cap). |
 | `internal/extract` | Fetch, paywall detection (`Rejected`), readability, `Sanitize` → allowlisted XHTML. |
 | `internal/epub` | Hand-rolled EPUB 3 + NCX with `archive/zip` + `text/template`. |
 | `internal/mail` | MIME with a base64 attachment + SMTP send (mandatory STARTTLS or implicit TLS). |
-| `internal/state` | IDs of URLs already sent or rejected, pruned by retention. |
-| `internal/config` | JSON with `//` comment lines, defaults, secrets from env vars. |
+| `internal/state` | IDs of URLs already sent or rejected, pruned by retention. `Store` interface; `FileStore` writes atomically. |
+| `internal/archive` | `PutIfAbsent(ctx, date, epub)`: stores each edition once. It is the idempotency lock before emailing. `NewFile`, `NewNoop`. |
+| `internal/config` | Strict JSON with `//` comment lines, defaults, env secrets, validation: `Load(path)`, `LoadBytes(data, source)`. Stdlib only, so it declares its own source types and default literals. |
 | `internal/news` | `Candidate → Pick → Article` types, plus `CleanURL`, `DedupeKey`, `URLID`. |
 | `internal/xmlx` | XML escaping that drops characters invalid in XML 1.0. |
-| `internal/httpx` | HTTP client with timeouts, body cap, 1 retry on 5xx/429/network errors. |
+| `internal/httpx` | HTTP client with timeouts and body cap. `Get` retries once on 5xx/429/network errors; `Post` never retries and keeps error bodies. |
 | `tools/fixtureserver` | Dev only: fake feeds/HN/Lobsters and a mock OpenRouter. |
 
 ## Invariants (do not break)
@@ -89,10 +95,9 @@ cmd/news-paper ──> internal/pipeline ──> sources → rank → extract �
 
 Implement in this order, keeping these shapes:
 
-1. **`state.Store`**: interface `Load(ctx) (*State, error)` / `Save(ctx, *State) error`.
-   `FileStore` is the current implementation; add `S3Store`. `pipeline.Run` takes the store as a
-   parameter instead of reading `cfg.State.Path`.
-2. **`config.LoadBytes([]byte)`**, so the config can come from S3.
+1. **`state.Store`** (interface and `FileStore` done): add `S3Store` with conditional writes that
+   return `state.ErrConflict`. `pipeline.Run` already takes the store through `Deps`.
+2. **`config.LoadBytes(data, source)`** (done), so the config can come from S3.
 3. **`cmd/lambda/main.go`**: `lambda.Start(handler)`, `import _ "time/tzdata"`, logs via
    `slog.NewJSONHandler`. Build:
    `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o bootstrap ./cmd/lambda`
@@ -103,18 +108,15 @@ Implement in this order, keeping these shapes:
    s3://<bucket>/state.json
    s3://<bucket>/editions/YYYY-MM-DD.epub
    ```
-   Upload the day's EPUB with `If-None-Match: *` **before** sending the email: it is the
-   idempotency lock. If it already exists, don't resend. This covers Lambda's async retries.
+   Add an S3 `archive.Archive` that uploads the day's EPUB with `If-None-Match: *`; the pipeline
+   already calls it **before** sending the email: it is the idempotency lock. If it already exists, don't resend. This covers Lambda's async retries.
 5. **Concurrent extraction** (done): `Collect` runs up to `Concurrency` extractions in a sliding
-   window that **preserves ranking order** and stops once `want` articles succeed. The pipeline only
-   has to pass `extract.concurrency` through.
+   window that **preserves ranking order** and stops once `want` articles succeed.
 6. **Timeouts:** `runtime.run_timeout_min` must be lower than the Lambda timeout
    (suggested: Lambda 10 min, run 9 min).
 7. **Scheduler:** EventBridge Scheduler `cron(40 5 * * ? *)` with
    `ScheduleExpressionTimezone: America/Argentina/Buenos_Aires`. Lambda outside any VPC.
    The IaC tool (SAM/CDK/Terraform) is **undecided**: ask before adding infra.
-
-Once the migration is done, delete the router legacy (see above) in a separate commit.
 
 ## Dependencies
 
@@ -143,9 +145,13 @@ intentional (control over the XHTML).
 - **Add a source:** implement `sources.Source` (`Name`, `Fetch`) returning `news.Candidate`s
   with `URL` passed through `news.CleanURL`; fetch through `sources.get` (Accept header, 4 MiB cap,
   non-2xx → error) and give zero-valued fields the defaults inside the source. Add its config struct
-  to `sources.Config` (JSON tags as in the config file; `internal/config` embeds or maps it), register
+  to `sources.Config` (JSON tags as in the config file), mirror it in `config.Sources` and map it in
+  `pipeline.sourcesConfig`, register
   it in `sources.FromConfig` (order matters: it is the output order of `FetchAll`), and add a test
   with an inline payload served by `httptest` through the loopback-only `testClient`.
+- **Add a config field:** add it to `config.Config`, its default in `defaults.go`, its rule in
+  `validate.go` and its use in `pipeline`. A default that mirrors a package constant gets a row in
+  `pipeline/defaults_test.go`. Unknown keys are errors, so update `config.example.json` too.
 - **Change the ranking:** the prompt lives in `rank/openrouter.go` (`systemPrompt`/`userPrompt`).
   `parsePicks` tolerates code fences and prose around the JSON; keep it that way.
   Validate offline with `make bench`; the mock LLM is in `tools/fixtureserver`.
