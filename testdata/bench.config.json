@@ -1,0 +1,17 @@
+// Used by "make bench": everything points at tools/fixtureserver.
+{
+  "edition": {
+    // Every fixture page lives on 127.0.0.1, so there can be no per-domain cap.
+    "max_per_domain": -1
+  },
+  "profile": {"description": "Benchmark reader.", "keywords": ["web", "code"]},
+  "sources": {
+    // Negative means no age cutoff.
+    "max_age_hours": -1,
+    "hackernews": {"enabled": true, "api_base": "http://127.0.0.1:8099/hn"},
+    "lobsters": {"enabled": true, "url": "http://127.0.0.1:8099/lobsters/hottest.json"},
+    "feeds": [{"name": "bench", "url": "http://127.0.0.1:8099/feed.xml"}]
+  },
+  "rank": {"provider": "openrouter", "base_url": "http://127.0.0.1:8099/openrouter", "model": "bench/mock"},
+  "state": {"path": "dist/bench-state.json"}
+}

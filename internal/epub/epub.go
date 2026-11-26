@@ -35,7 +35,14 @@ func (e Edition) Filename() string {
 	return fmt.Sprintf("%s-%s.epub", slug, e.Date.Format("2006-01-02"))
 }
 
+// DefaultLanguage replaces an invalid Edition.Language.
+const DefaultLanguage = "en"
+
 var langRe = regexp.MustCompile(`^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$`)
+
+// ValidLanguage reports whether s is a well-formed language tag such as "en"
+// or "pt-BR". Write falls back to DefaultLanguage when Edition.Language isn't.
+func ValidLanguage(s string) bool { return langRe.MatchString(s) }
 
 type chapter struct {
 	news.Article
@@ -60,6 +67,10 @@ func Write(w io.Writer, ed Edition) error {
 	if len(ed.Articles) > 99 {
 		return fmt.Errorf("too many articles: %d", len(ed.Articles))
 	}
+	// A malformed dc:language can make Send-to-Kindle reject the whole file.
+	if !ValidLanguage(ed.Language) {
+		ed.Language = DefaultLanguage
+	}
 
 	v := view{
 		Edition:  ed,
@@ -70,7 +81,7 @@ func Write(w io.Writer, ed Edition) error {
 	}
 	for i, a := range ed.Articles {
 		lang := ed.Language
-		if langRe.MatchString(a.Language) {
+		if ValidLanguage(a.Language) {
 			lang = a.Language
 		}
 		c := chapter{Article: a, File: fmt.Sprintf("a%02d.xhtml", i+1), Lang: lang,

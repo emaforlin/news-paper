@@ -3,6 +3,7 @@ package httpx
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -307,5 +308,80 @@ func TestSleep(t *testing.T) {
 	}
 	if err := sleep(context.Background(), 0); err != nil {
 		t.Errorf("sleep(0) = %v", err)
+	}
+}
+
+func TestPost(t *testing.T) {
+	var method, body, ua, custom string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		method, body, ua, custom = r.Method, string(b), r.UserAgent(), r.Header.Get("X-Custom")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	resp, err := New(time.Second, "").Post(context.Background(), srv.URL, http.Header{"X-Custom": {"1"}}, []byte(`{"a":1}`), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != "POST" || body != `{"a":1}` || ua != DefaultUserAgent || custom != "1" {
+		t.Errorf("server saw %q %q %q %q", method, body, ua, custom)
+	}
+	if resp.StatusCode != 200 || string(resp.Body) != "ok" {
+		t.Errorf("resp = %d %q", resp.StatusCode, resp.Body)
+	}
+}
+
+func TestPostNoRetry(t *testing.T) {
+	for _, status := range []int{500, 429} {
+		srv, hits := scripted(t, step{status: status, body: "why"}, step{status: 200})
+		resp, err := (&Client{}).Post(context.Background(), srv.URL, nil, []byte("x"), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != status || string(resp.Body) != "why" || hits.Load() != 1 {
+			t.Errorf("status %d: got %d %q after %d requests", status, resp.StatusCode, resp.Body, hits.Load())
+		}
+	}
+
+	srv, hits := scripted(t, step{drop: true}, step{status: 200})
+	_, err := (&Client{}).Post(context.Background(), srv.URL, nil, []byte("x"), 0)
+	if err == nil || !strings.HasPrefix(err.Error(), "POST ") || hits.Load() != 1 {
+		t.Errorf("err = %v after %d requests", err, hits.Load())
+	}
+}
+
+func TestPostBodyCap(t *testing.T) {
+	for _, status := range []int{200, 400} {
+		srv, _ := scripted(t, step{status: status, body: "0123456789"})
+		resp, err := (&Client{}).Post(context.Background(), srv.URL, nil, nil, 4)
+		if err != nil || string(resp.Body) != "0123" || !resp.Truncated {
+			t.Errorf("status %d: resp = %+v, err = %v", status, resp, err)
+		}
+	}
+
+	var replayed string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/a" {
+			http.Redirect(w, r, "/b", http.StatusTemporaryRedirect)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		replayed = r.Method + " " + string(b)
+	}))
+	defer srv.Close()
+	if _, err := (&Client{}).Post(context.Background(), srv.URL+"/a", nil, []byte("payload"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if replayed != "POST payload" {
+		t.Errorf("after redirect = %q", replayed)
+	}
+
+	counted, hits := scripted(t, step{status: 200})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := (&Client{}).Post(ctx, counted.URL, nil, nil, 0)
+	if !errors.Is(err, context.Canceled) || hits.Load() != 0 {
+		t.Errorf("err = %v after %d requests", err, hits.Load())
 	}
 }
