@@ -105,3 +105,6 @@ func truncate(s string, n int) string {
 	}
 	return cut + "…"
 }
+
+// summaryRunes caps Candidate.Summary for every source.
+const summaryRunes = 200
