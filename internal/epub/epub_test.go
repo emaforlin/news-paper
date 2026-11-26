@@ -945,11 +945,13 @@ func TestHostileStringsAreEscaped(t *testing.T) {
 	if len(links) != 2 {
 		t.Fatalf("p.src has %d links, want 2", len(links))
 	}
-	if got := links[0].attr("", "href"); got != clean(a.URL) {
-		t.Errorf("source href = %q, want %q", got, clean(a.URL))
+	// hrefs are percent-encoded into valid URIs (the invalid \x0b too).
+	const escaped = "T&T%20%3Cb%3E%22q%22%3C/b%3E%20a%3Eb%0B"
+	if got, want := links[0].attr("", "href"), "https://example.com/p?x="+escaped; got != want {
+		t.Errorf("source href = %q, want %q", got, want)
 	}
-	if got := links[1].attr("", "href"); got != clean(a.Discussion) {
-		t.Errorf("discussion href = %q, want %q", got, clean(a.Discussion))
+	if got, want := links[1].attr("", "href"), "https://example.com/d?x="+escaped; got != want {
+		t.Errorf("discussion href = %q, want %q", got, want)
 	}
 }
 

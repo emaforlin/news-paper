@@ -65,6 +65,8 @@ cmd/news-paper ──> internal/pipeline ──> sources → rank → extract �
 1. **EPUB XHTML must be well-formed and valid.** Send-to-Kindle rejects the whole file
    (error E999) over a single problem. So:
    - every string interpolated in `internal/epub/templates.go` goes through `x` (text) or `a` (attribute);
+     external URLs in `href` go through `uri` first (`{{a (uri .URL)}}`): valid XML is not enough,
+     an href that isn't a valid URI is epubcheck error RSC-020;
    - article bodies come **only** from `extract.Sanitize`, never raw HTML;
    - `mimetype` is the first entry, stored, with no data descriptor (`CreateRaw`);
    - if you touch `epub/` or `sanitize.go`, run `epubcheck` and aim for 0 errors and 0 warnings.

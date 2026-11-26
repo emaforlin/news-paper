@@ -1,7 +1,9 @@
 package epub
 
 // Every interpolated string goes through x (text) or a (attribute), except
-// .XHTML, which the sanitizer already emitted as well-formed XHTML.
+// .XHTML, which the sanitizer already emitted as well-formed XHTML. External
+// URLs in href also go through uri first: valid XML is not enough, epubcheck
+// (and Send-to-Kindle) reject an href that is not a valid URI (RSC-020).
 
 var tplContainer = mustTpl("container", `<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -130,8 +132,8 @@ var tplChapter = mustTpl("chapter", `<?xml version="1.0" encoding="UTF-8"?>
 {{.XHTML}}
 </div>
 <hr/>
-<p class="src">Original: <a href="{{a .URL}}">{{x .Domain}}</a>
-{{- if .Discussion}} · <a href="{{a .Discussion}}">discusión ({{x .Source}})</a>{{end}}</p>
+<p class="src">Original: <a href="{{a (uri .URL)}}">{{x .Domain}}</a>
+{{- if .Discussion}} · <a href="{{a (uri .Discussion)}}">discusión ({{x .Source}})</a>{{end}}</p>
 </body>
 </html>
 `)
