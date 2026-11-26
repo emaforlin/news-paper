@@ -163,6 +163,7 @@ func fmtMinutes(m int) string {
 var funcs = template.FuncMap{
 	"x":   xmlx.Text,
 	"a":   xmlx.Attr,
+	"uri": escapeURI, // hrefs to external URLs: {{a (uri .URL)}}
 	"min": fmtMinutes,
 	"inc": func(i int) int { return i + 2 }, // playOrder: front page is 1
 }
