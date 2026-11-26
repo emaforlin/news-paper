@@ -2,11 +2,19 @@ package mail
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"errors"
 	"io"
+	"math/big"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/mail"
 	"net/textproto"
 	"regexp"
@@ -154,4 +162,42 @@ func testMessage() Message {
 		},
 		Date: time.Date(2026, 11, 26, 5, 40, 0, 0, art),
 	}
+}
+
+// selfSignedCert returns a server TLS config for a fresh self-signed
+// certificate with the given SANs, and a pool that trusts it.
+func selfSignedCert(t *testing.T, dnsNames []string, ips []net.IP) (*tls.Config, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "fake smtp"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		DNSNames:              dnsNames,
+		IPAddresses:           ips,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+	return &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}, pool
+}
+
+// loopbackCert is selfSignedCert for 127.0.0.1, the fake server's address.
+func loopbackCert(t *testing.T) (*tls.Config, *x509.CertPool) {
+	return selfSignedCert(t, nil, []net.IP{net.IPv4(127, 0, 0, 1)})
 }
