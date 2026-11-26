@@ -1,0 +1,40 @@
+// news-paper configuration. Copy to config.json (gitignored).
+// Only whole lines may be comments.
+// Secrets: set OPENROUTER_API_KEY and SMTP_PASSWORD in the environment.
+{
+  "edition": {
+    "title": "Diario",
+    // Language of the articles, used by the Kindle dictionary.
+    "language": "en",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "picks": 10,
+    "overselect": 8,
+    // Negative means no cap.
+    "max_per_domain": 2
+  },
+  "profile": {
+    "description": "Backend engineer: Go, databases, distributed systems, Linux.",
+    "keywords": ["go", "postgres", "distributed systems"],
+    "avoid": ["crypto", "funding round"]
+  },
+  "sources": {
+    "max_age_hours": 72,
+    "hackernews": {"enabled": true, "min_points": 100, "limit": 60},
+    "lobsters": {"enabled": true, "limit": 25},
+    "feeds": [{"name": "dan", "url": "https://danluu.com/atom.xml"}]
+  },
+  "rank": {"provider": "openrouter", "model": "CHANGE-ME/model", "timeout_sec": 90},
+  "extract": {"min_words": 250, "max_body_bytes": 2097152, "deny_domains": ["wsj.com"], "concurrency": 4},
+  "smtp": {
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "tls_mode": "starttls",
+    "username": "me@example.com",
+    // Must be on Amazon's approved sender list.
+    "from": "me@example.com",
+    "to": "me@kindle.com"
+  },
+  "state": {"path": "state.json", "retention_days": 30},
+  "http": {"timeout_sec": 25, "concurrency": 4},
+  "runtime": {"run_timeout_min": 9}
+}
