@@ -17,6 +17,14 @@ The CLI (`cmd/news-paper`) is for local development.
 go mod tidy                     # first time: resolves deps and go.sum
 gofmt -l . && go vet ./...      # must print nothing
 go test ./...                   # offline: tests must not touch the network
+make check                      # gofmt + vet + test
+make cover                      # fails if any internal/ package is below 90% statement coverage
+make race                       # go test -race ./...
+
+# extract: fuzz the sanitizer, and run it over a real corpus (optionally dumping an EPUB)
+go test -run='^$' -fuzz=FuzzSanitize -fuzztime=60s ./internal/extract
+EXTRACT_CORPUS=<dir> EXTRACT_EPUB_OUT=$PWD/dist go test -run TestCorpus ./internal/extract
+epubcheck dist/corpus.epub
 
 go run ./cmd/news-paper -config config.json sources                      # today's candidates (TSV)
 go run ./cmd/news-paper -config config.json extract <URL>                # debug extraction for one URL
@@ -95,9 +103,9 @@ Implement in this order, keeping these shapes:
    ```
    Upload the day's EPUB with `If-None-Match: *` **before** sending the email: it is the
    idempotency lock. If it already exists, don't resend. This covers Lambda's async retries.
-5. **Concurrent extraction**: `extract.concurrency` exists in the config, but `Collect` is
-   sequential today. Parallelize with a worker pool that **preserves ranking order** and stops
-   once `edition.picks` articles succeed.
+5. **Concurrent extraction** (done): `Collect` runs up to `Concurrency` extractions in a sliding
+   window that **preserves ranking order** and stops once `want` articles succeed. The pipeline only
+   has to pass `extract.concurrency` through.
 6. **Timeouts:** `runtime.run_timeout_min` must be lower than the Lambda timeout
    (suggested: Lambda 10 min, run 9 min).
 7. **Scheduler:** EventBridge Scheduler `cron(40 5 * * ? *)` with
@@ -124,7 +132,9 @@ intentional (control over the XHTML).
 - Wrap errors with `fmt.Errorf("what: %w", err)`. Permanent rejections are `*extract.Rejected`.
 - Log with `log/slog` key-value pairs (`log.Info("extracted", "domain", d, "words", n)`); no `fmt.Println` outside CLI output.
 - No mutable global state. Read-only package-level tables (allowlists, layouts) are fine.
-- Table-driven tests when there are more than 2 cases. For XML output, use the `wellFormed` helper in `extract/sanitize_test.go`.
+- Table-driven tests when there are more than 2 cases. For XML output, use the `wellFormed` and `checkModel` helpers in `extract/model_test.go`
+  (`checkOutput` in `sanitize_test.go` runs every Sanitize property at once). HTTP tests use
+  `testClient` (loopback-only) from `extract/helpers_test.go`.
 
 ## Recipes
 
