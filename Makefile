@@ -1,7 +1,7 @@
 GO        ?= go
 COVER_MIN ?= 90
 
-.PHONY: check fmt vet test cover race
+.PHONY: check fmt vet test cover race bench
 
 check: fmt vet test
 
@@ -25,3 +25,8 @@ cover:
 	      if (p + 0 < min) { print "coverage below " min "%: " $$0; bad = 1 } } } \
 	  /^(FAIL|---)/ { bad = 1 } \
 	  END { exit bad }'
+
+# Full pipeline offline against tools/fixtureserver, writing dist/bench.epub.
+# PAGES is a directory of <name>/source.html files.
+bench:
+	@GO="$(GO)" PAGES="$(PAGES)" scripts/bench.sh

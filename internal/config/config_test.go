@@ -39,7 +39,7 @@ func intp(v int) *int { return &v }
 func TestLoadExamples(t *testing.T) {
 	t.Setenv(EnvOpenRouterKey, "")
 	t.Setenv(EnvSMTPPassword, "")
-	for _, path := range []string{"../../config.example.json"} {
+	for _, path := range []string{"../../config.example.json", "../../testdata/bench.config.json"} {
 		c, err := Load(path)
 		if err != nil {
 			t.Fatal(err)
