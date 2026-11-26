@@ -185,6 +185,13 @@ func TestFromConfig(t *testing.T) {
 		{"feeds without age", Config{Feeds: feeds}, []string{"feed:a", "feed:b"}, time.Time{}},
 		{"negative age", Config{MaxAgeHours: -1, Feeds: feeds[:1]}, []string{"feed:a"}, time.Time{}},
 		{"empty", Config{}, nil, time.Time{}},
+		{"all enabled", Config{
+			MaxAgeHours: 48,
+			HackerNews:  HNConfig{Enabled: true},
+			Lobsters:    LobstersConfig{Enabled: true},
+			Feeds:       feeds,
+		}, []string{"hn", "lobsters", "feed:a", "feed:b"}, now.Add(-48 * time.Hour)},
+		{"only lobsters", Config{Lobsters: LobstersConfig{Enabled: true}, HackerNews: HNConfig{APIBase: "x"}}, []string{"lobsters"}, time.Time{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -200,6 +207,16 @@ func TestFromConfig(t *testing.T) {
 				t.Errorf("names = %v, want %v", names, tt.wantNames)
 			}
 		})
+	}
+	all := FromConfig(Config{
+		HackerNews: HNConfig{Enabled: true, APIBase: "https://hn.test", MinPoints: 7, Limit: 9},
+		Lobsters:   LobstersConfig{Enabled: true, URL: "https://lob.test/h.json", Limit: 3},
+	}, now)
+	if h := all[0].(*HackerNews); *h != (HackerNews{APIBase: "https://hn.test", MinPoints: 7, Limit: 9, Now: now}) {
+		t.Errorf("hn = %+v", h)
+	}
+	if l := all[1].(*Lobsters); *l != (Lobsters{URL: "https://lob.test/h.json", Limit: 3}) {
+		t.Errorf("lobsters = %+v", l)
 	}
 	f := FromConfig(Config{Feeds: feeds}, now)[0].(*Feed)
 	if f.URL != feeds[0].URL || f.Limit != 5 || f.FeedName != "a" {

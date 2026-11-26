@@ -63,6 +63,13 @@ type FeedConfig struct {
 // the feeds' age cutoff.
 func FromConfig(c Config, now time.Time) []Source {
 	var srcs []Source
+	if c.HackerNews.Enabled {
+		h := c.HackerNews
+		srcs = append(srcs, &HackerNews{APIBase: h.APIBase, MinPoints: h.MinPoints, Limit: h.Limit, Now: now})
+	}
+	if c.Lobsters.Enabled {
+		srcs = append(srcs, &Lobsters{URL: c.Lobsters.URL, Limit: c.Lobsters.Limit})
+	}
 	var notBefore time.Time
 	if c.MaxAgeHours > 0 {
 		notBefore = now.Add(-time.Duration(c.MaxAgeHours) * time.Hour)
