@@ -883,6 +883,43 @@ func TestChapterLanguageFallback(t *testing.T) {
 	}
 }
 
+func badLanguageEdition(lang string) Edition {
+	ed := sampleEdition()
+	ed.Language = lang
+	return ed
+}
+
+func TestInvalidEditionLanguage(t *testing.T) {
+	for lang, want := range map[string]string{"english": "en", "": "en", "e": "en", "pt-BR": "pt-BR"} {
+		t.Run(fmt.Sprintf("%q", lang), func(t *testing.T) {
+			b := build(t, badLanguageEdition(lang))
+			opf := b.doc(t, "OEBPS/content.opf")
+			langs := opf.byTag("language")
+			if len(langs) != 1 || langs[0].textContent() != want {
+				t.Errorf("dc:language = %v, want %q", langs, want)
+			}
+			// The third article has no language of its own.
+			if got := b.doc(t, "OEBPS/a03.xhtml").attr(nsXML, "lang"); got != want {
+				t.Errorf("chapter xml:lang = %q, want %q", got, want)
+			}
+			if got := b.doc(t, "OEBPS/front.xhtml").attr(nsXML, "lang"); got != want {
+				t.Errorf("front xml:lang = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestValidLanguage(t *testing.T) {
+	for lang, want := range map[string]bool{
+		"en": true, "es-419": true, "pt-BR": true,
+		"english": false, "e": false, "": false, "en_US": false,
+	} {
+		if got := ValidLanguage(lang); got != want {
+			t.Errorf("ValidLanguage(%q) = %v", lang, got)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // §10 Escaping
 // ---------------------------------------------------------------------------
@@ -1345,6 +1382,7 @@ func TestEpubcheck(t *testing.T) {
 		"sample":  sampleEdition(),
 		"hostile": hostileEdition(),
 		"empty":   emptyEdition(),
+		"badlang": badLanguageEdition("english"),
 	} {
 		t.Run(label, func(t *testing.T) {
 			raw, err := Bytes(ed)
