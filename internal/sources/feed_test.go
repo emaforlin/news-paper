@@ -1,9 +1,12 @@
 package sources
 
 import (
+	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -394,6 +397,133 @@ func assertCandidates(t *testing.T, got, want []news.Candidate) {
 		g.Published, w.Published = time.Time{}, time.Time{}
 		if !reflect.DeepEqual(g, w) {
 			t.Errorf("[%d]\n got %+v\nwant %+v", i, g, w)
+		}
+	}
+}
+
+// rssItems renders an RSS 2.0 feed; each date is a pubDate ("" = undated).
+func rssItems(dates ...string) string {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>`)
+	for i, d := range dates {
+		fmt.Fprintf(&b, `<item><title>i%d</title><link>/p/%d</link>`, i, i)
+		if d != "" {
+			b.WriteString(`<pubDate>` + d + `</pubDate>`)
+		}
+		b.WriteString(`</item>`)
+	}
+	b.WriteString(`</channel></rss>`)
+	return b.String()
+}
+
+func titles(cs []news.Candidate) []string {
+	var out []string
+	for _, c := range cs {
+		out = append(out, c.Title)
+	}
+	return out
+}
+
+func TestFeedFetchFilter(t *testing.T) {
+	const (
+		fresh = "Wed, 25 Nov 2026 10:00:00 +0000"
+		stale = "Mon, 02 Nov 2026 10:00:00 +0000"
+	)
+	notBefore := time.Date(2026, 11, 24, 8, 40, 0, 0, time.UTC)
+	five := serve(t, fixed("application/rss+xml", rssItems(fresh, stale, "", fresh, fresh), nil))
+	many := serve(t, fixed("application/rss+xml", rssItems(make([]string, 25)...), nil))
+
+	tests := []struct {
+		name string
+		feed Feed
+		want []string
+	}{
+		{"age filter then limit", Feed{FeedName: "blog", URL: five.URL, Limit: 3, NotBefore: notBefore}, []string{"i0", "i2", "i3"}},
+		{"no limit hit", Feed{FeedName: "blog", URL: five.URL, NotBefore: notBefore}, []string{"i0", "i2", "i3", "i4"}},
+		{"zero NotBefore keeps old", Feed{FeedName: "blog", URL: five.URL}, []string{"i0", "i1", "i2", "i3", "i4"}},
+		{"default limit", Feed{FeedName: "blog", URL: many.URL}, titles(func() []news.Candidate {
+			cs := make([]news.Candidate, DefaultFeedLimit)
+			for i := range cs {
+				cs[i].Title = fmt.Sprintf("i%d", i)
+			}
+			return cs
+		}())},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.feed.Fetch(context.Background(), testClient(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(titles(got), tt.want) {
+				t.Errorf("titles = %v, want %v", titles(got), tt.want)
+			}
+			for _, c := range got {
+				if c.Source != "feed:blog" {
+					t.Errorf("Source = %q", c.Source)
+				}
+			}
+		})
+	}
+}
+
+func TestFeedFetchRequest(t *testing.T) {
+	var req *http.Request
+	mux := http.NewServeMux()
+	mux.Handle("/old", http.RedirectHandler("/feeds/rss.xml", http.StatusMovedPermanently))
+	mux.Handle("/feeds/rss.xml", fixed("application/rss+xml",
+		`<rss><channel><item><link>p/0</link></item></channel></rss>`, &req))
+	srv := serve(t, mux)
+
+	f := &Feed{FeedName: "r", URL: srv.URL + "/old"}
+	got, err := f.Fetch(context.Background(), testClient(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := srv.URL + "/feeds/p/0"; got[0].URL != want {
+		t.Errorf("URL = %q, want %q (resolved against the final URL)", got[0].URL, want)
+	}
+	if a := req.Header.Get("Accept"); a != "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.5" {
+		t.Errorf("Accept = %q", a)
+	}
+}
+
+func TestFeedFetchErrors(t *testing.T) {
+	notFound := serve(t, http.NotFoundHandler())
+	page := serve(t, fixed("text/html", `<html><body><p>hi</p></body></html>`, nil))
+	closed := serve(t, http.NotFoundHandler())
+	closed.Close()
+
+	tests := []struct {
+		name, url string
+		check     func(error) bool
+	}{
+		{"404", notFound.URL, func(err error) bool { return err != nil && err.Error() == "status 404" }},
+		{"html page", page.URL, func(err error) bool { return errors.Is(err, ErrNoItems) }},
+		{"closed server", closed.URL, func(err error) bool { return err != nil && strings.HasPrefix(err.Error(), "GET ") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := (&Feed{FeedName: "x", URL: tt.url}).Fetch(context.Background(), testClient(t))
+			if got != nil || !tt.check(err) {
+				t.Errorf("got %v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestFeedName(t *testing.T) {
+	tests := []struct {
+		feed Feed
+		want string
+	}{
+		{Feed{FeedName: "blog", URL: "https://x.example/rss"}, "feed:blog"},
+		{Feed{URL: "https://www.go.dev/blog/feed.atom"}, "feed:go.dev"},
+		{Feed{}, "feed:"},
+	}
+	for _, tt := range tests {
+		if got := tt.feed.Name(); got != tt.want {
+			t.Errorf("%+v.Name() = %q, want %q", tt.feed, got, tt.want)
 		}
 	}
 }

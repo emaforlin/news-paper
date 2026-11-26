@@ -2,6 +2,8 @@ package sources
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 
 	"golang.org/x/net/html/charset"
 
+	"github.com/emaforlin/news-paper/internal/httpx"
 	"github.com/emaforlin/news-paper/internal/news"
 )
 
@@ -217,4 +220,57 @@ func firstDate(vals ...string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+const (
+	// DefaultFeedLimit applies when Feed.Limit <= 0.
+	DefaultFeedLimit = 20
+
+	feedAccept = "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.5"
+)
+
+// Feed is an RSS 2.0, RSS 1.0 or Atom feed.
+type Feed struct {
+	FeedName  string    // Name() is "feed:" + FeedName ("feed:<domain>" when empty)
+	URL       string    // feed URL
+	Limit     int       // max items kept after the age filter; <= 0 → DefaultFeedLimit
+	NotBefore time.Time // items dated before it are dropped; zero → no cutoff
+}
+
+func (f *Feed) Name() string {
+	if f.FeedName == "" {
+		return "feed:" + news.Domain(f.URL)
+	}
+	return "feed:" + f.FeedName
+}
+
+// Fetch downloads and parses the feed, drops dated items older than
+// NotBefore (undated ones are kept) and keeps the first Limit, in document
+// order.
+func (f *Feed) Fetch(ctx context.Context, hc *httpx.Client) ([]news.Candidate, error) {
+	body, final, err := get(ctx, hc, f.URL, feedAccept)
+	if err != nil {
+		return nil, err
+	}
+	items, err := ParseFeed(bytes.NewReader(body), final.String())
+	if err != nil {
+		return nil, err
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = DefaultFeedLimit
+	}
+	name := f.Name()
+	out := make([]news.Candidate, 0, min(limit, len(items)))
+	for _, c := range items {
+		if len(out) == limit {
+			break
+		}
+		if !c.Published.IsZero() && c.Published.Before(f.NotBefore) {
+			continue
+		}
+		c.Source = name
+		out = append(out, c)
+	}
+	return out, nil
 }
