@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -80,32 +81,24 @@ func checkOutput(t *testing.T, out string, words int) {
 	if n := len(strings.Fields(textOf(t, out))); n != words {
 		t.Errorf("words = %d, but textOf has %d fields: %q", words, n, out)
 	}
-	for _, bad := range []string{"<h1", "<script", "<img", " id=", " class=", " style=", ` href="#`} {
-		if strings.Contains(out, bad) {
-			t.Errorf("output contains %q: %s", bad, out)
+	// Text can legitimately mention "id=" (code samples), so only tags are
+	// searched. Text never contains a raw "<".
+	for _, tag := range tagRe.FindAllString(out, -1) {
+		for _, bad := range []string{"<h1", "<script", "<img", " id=", " class=", " style=", ` href="#`} {
+			if strings.Contains(tag, bad) {
+				t.Errorf("tag %s contains %q", tag, bad)
+			}
 		}
-	}
-	if onAttr(out) {
-		t.Errorf("output contains an on* attribute: %s", out)
+		if onAttrRe.MatchString(tag) {
+			t.Errorf("tag %s has an on* attribute", tag)
+		}
 	}
 }
 
-// onAttr reports whether some tag in s carries an attribute named on….
-func onAttr(s string) bool {
-	z := html.NewTokenizer(strings.NewReader(s))
-	for {
-		switch z.Next() {
-		case html.ErrorToken:
-			return false
-		case html.StartTagToken, html.SelfClosingTagToken:
-			for _, a := range z.Token().Attr {
-				if strings.HasPrefix(a.Key, "on") {
-					return true
-				}
-			}
-		}
-	}
-}
+var (
+	tagRe    = regexp.MustCompile(`<[^>]*>`)
+	onAttrRe = regexp.MustCompile(`\son[a-z]*=`)
+)
 
 // FS §6.5.
 var fsExamples = []sanitizeCase{
