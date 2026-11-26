@@ -167,8 +167,8 @@ func checkModel(t *testing.T, frag string) {
 func modelProblems(root *xnode) []string {
 	var probs []string
 	add := func(format string, args ...any) { probs = append(probs, fmt.Sprintf(format, args...)) }
-	var walk func(n, parent *xnode, phrasing, inA bool)
-	walk = func(n, parent *xnode, phrasing, inA bool) {
+	var walk func(n, parent *xnode, phrasing, inA, inTable bool)
+	walk = func(n, parent *xnode, phrasing, inA, inTable bool) {
 		allowed, ok := modelAttrs[n.name]
 		if !ok {
 			add("element <%s> not allowed", n.name)
@@ -187,6 +187,9 @@ func modelProblems(root *xnode) []string {
 		}
 		if inA && n.name == "a" {
 			add("nested <a>")
+		}
+		if inTable && n.name == "table" {
+			add("nested <table>")
 		}
 		if want, ok := modelParents[n.name]; ok && !want[parent.name] {
 			add("<%s> inside <%s>", n.name, parent.name)
@@ -212,13 +215,13 @@ func modelProblems(root *xnode) []string {
 		childPhrasing := phrasing || modelPhrasingOnly[n.name]
 		for _, k := range n.kids {
 			if k.name != "" {
-				walk(k, n, childPhrasing, inA || n.name == "a")
+				walk(k, n, childPhrasing, inA || n.name == "a", inTable || n.name == "table")
 			}
 		}
 	}
 	for _, k := range root.kids {
 		if k.name != "" {
-			walk(k, root, false, false)
+			walk(k, root, false, false, false)
 		}
 	}
 	return probs

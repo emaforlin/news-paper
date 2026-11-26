@@ -74,6 +74,8 @@ cmd/news-paper ──> internal/pipeline ──> sources → rank → extract �
      external URLs in `href` go through `uri` first (`{{a (uri .URL)}}`): valid XML is not enough,
      an href that isn't a valid URI is epubcheck error RSC-020;
    - article bodies come **only** from `extract.Sanitize`, never raw HTML;
+   - no nested tables: epubcheck accepts them, but Send to Kindle then delivers the whole edition
+     as fixed layout (no font resizing). `Sanitize` unwraps any table that holds another;
    - `mimetype` is the first entry, stored, with no data descriptor (`CreateRaw`);
    - if you touch `epub/` or `sanitize.go`, run `epubcheck` and aim for 0 errors and 0 warnings.
 2. **An edition always goes out.** A failing source is logged and skipped. A failing LLM **falls**

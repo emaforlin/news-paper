@@ -335,6 +335,26 @@ func TestSanitizeRules(t *testing.T) {
 	})
 }
 
+// R13: nested tables are page layout (e.g. Hacker News threads).
+func TestSanitizeLayoutTables(t *testing.T) {
+	runSanitizeCases(t, testBase, []sanitizeCase{
+		{"nest unwrapped", `<table><tr><td><table><tr><td></td><td><br><p>b</p></td></tr></table></td></tr></table>`,
+			`<br/><p>b</p>`, 1},
+		{"inline cells become paragraphs", `<table><tr><th>h</th><td><em>a</em></td><td><table><tr><td>b</td></tr></table></td></tr></table>`,
+			`<p>h</p><p><em>a</em></p><p>b</p>`, 3},
+		{"caption in a nest", `<table><caption>c</caption><tr><td><table><tr><td>a</td></tr></table></td></tr></table>`,
+			`<p>c</p><p>a</p>`, 2},
+		{"data table beside a nest kept", `<table><tr><td><table><tr><td>a</td></tr></table></td></tr></table><table><tr><td>d</td></tr></table>`,
+			`<p>a</p><table><tbody><tr><td>d</td></tr></tbody></table>`, 2},
+		{"nest under a wrapper", `<table><tr><td><div><blockquote><table><tr><td>q</td></tr></table></blockquote></div></td></tr></table>`,
+			`<blockquote><p>q</p></blockquote>`, 1},
+		{"dropped table doesn't count", `<table><tr><td>a<nav><table><tr><td>n</td></tr></table></nav></td></tr></table>`,
+			`<table><tbody><tr><td>a</td></tr></tbody></table>`, 1},
+		{"nest in a list item", `<ul><li><table><tr><td><table><tr><td>a</td></tr></table></td></tr></table></li></ul>`,
+			`<ul><li><p>a</p></li></ul>`, 1},
+	})
+}
+
 func TestSanitizeNilBase(t *testing.T) {
 	runSanitizeCases(t, nil, []sanitizeCase{
 		{"relative unwrapped", `<a href="/rel">r</a>`, `r`, 1},

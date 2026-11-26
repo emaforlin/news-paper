@@ -148,11 +148,14 @@ type mark struct {
 	pending, boundary bool
 }
 
-// mode is the rendering context inherited from emitted ancestors.
-type mode struct{ phrasing, pre bool }
+// mode is the rendering context inherited from ancestors.
+type mode struct {
+	phrasing, pre bool
+	layout        bool // inside a table nest that is being unwrapped (R13)
+}
 
 func (m mode) child(tag atom.Atom) mode {
-	return mode{phrasing: m.phrasing || phrasingOnly[tag], pre: m.pre || tag == atom.Pre}
+	return mode{phrasing: m.phrasing || phrasingOnly[tag], pre: m.pre || tag == atom.Pre, layout: m.layout}
 }
 
 func (s *sanitizer) children(n *html.Node, m mode) {
@@ -188,6 +191,11 @@ func (s *sanitizer) element(n *html.Node, m mode) {
 	if tag == atom.H1 { // R4
 		tag = atom.H2
 	}
+	// R13: a table holding another table is page layout, and Send to Kindle
+	// answers nested tables by delivering the whole book as fixed layout.
+	if tag == atom.Table && !m.layout && contains(n, isTable) {
+		m.layout = true
+	}
 	if m.phrasing && blockTags[tag] { // R5
 		if tag == atom.Hr {
 			s.void(atom.Br)
@@ -199,6 +207,19 @@ func (s *sanitizer) element(n *html.Node, m mode) {
 	if _, ok := allowedAttrs[tag]; !ok { // R6
 		s.unwrap(n, m, blockTags[tag] && !m.pre)
 		return
+	}
+	if m.layout {
+		switch tag {
+		case atom.Table:
+			s.unwrap(n, m, true)
+			return
+		case atom.Td, atom.Th, atom.Caption:
+			if contains(n, isBlock) {
+				s.unwrap(n, m, true)
+				return
+			}
+			tag = atom.P // keeps neighbouring cells from running together
+		}
 	}
 	if f := s.top(); f != nil && f.implicit &&
 		(tag == atom.Li && f.tag == atom.Li || (tag == atom.Dt || tag == atom.Dd) && f.tag == atom.Dd) {
@@ -260,6 +281,30 @@ func (s *sanitizer) element(n *html.Node, m mode) {
 		}
 	}
 	s.close()
+}
+
+func isTable(tag atom.Atom) bool { return tag == atom.Table }
+
+func isBlock(tag atom.Atom) bool { return blockTags[tag] }
+
+// contains reports whether a descendant of n that would be rendered (R2, R3)
+// has a tag that match accepts.
+func contains(n *html.Node, match func(atom.Atom) bool) bool {
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode {
+			tag := tagOf(c)
+			if c.Namespace != "" || dropTags[tag] {
+				continue
+			}
+			if match(tag) {
+				return true
+			}
+		}
+		if contains(c, match) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *sanitizer) top() *frame {
