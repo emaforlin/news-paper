@@ -69,6 +69,36 @@ var inlineTags = set(
 // keepEmpty elements survive R11 even without content.
 var keepEmpty = set(atom.Td, atom.Th)
 
+// requiredParent is R7: the elements that must be the nearest emitted
+// ancestor of each structural element.
+var requiredParent = map[atom.Atom]map[atom.Atom]bool{
+	atom.Li:         set(atom.Ul, atom.Ol),
+	atom.Dt:         set(atom.Dl),
+	atom.Dd:         set(atom.Dl),
+	atom.Figcaption: set(atom.Figure),
+	atom.Tr:         set(atom.Table, atom.Thead, atom.Tbody, atom.Tfoot),
+	atom.Td:         set(atom.Tr),
+	atom.Th:         set(atom.Tr),
+	atom.Thead:      set(atom.Table),
+	atom.Tbody:      set(atom.Table),
+	atom.Tfoot:      set(atom.Table),
+	atom.Caption:    set(atom.Table),
+}
+
+// orphansToP are rewritten as <p> when R7 fails; other structural elements
+// are unwrapped.
+var orphansToP = set(atom.Li, atom.Dt, atom.Dd, atom.Figcaption)
+
+// tableChildren lists what table parts may contain directly (C-4). Anything
+// else there is dropped.
+var tableChildren = map[atom.Atom]map[atom.Atom]bool{
+	atom.Table: set(atom.Caption, atom.Thead, atom.Tbody, atom.Tfoot, atom.Tr),
+	atom.Thead: set(atom.Tr),
+	atom.Tbody: set(atom.Tr),
+	atom.Tfoot: set(atom.Tr),
+	atom.Tr:    set(atom.Td, atom.Th),
+}
+
 func set(as ...atom.Atom) map[atom.Atom]bool {
 	m := make(map[atom.Atom]bool, len(as))
 	for _, a := range as {
@@ -94,22 +124,26 @@ func Sanitize(root *html.Node, base *url.URL) (xhtml string, words int) {
 // sanitizer writes the output in one pass. Whitespace is never written
 // eagerly: it is owed as pending and flushed only before more content.
 type sanitizer struct {
-	buf      []byte
-	base     *url.URL
-	pending  bool    // a separator space is owed
-	boundary bool    // the last write was a non-inline tag (or nothing): no space needed
-	content  int     // count of non-whitespace writes, for R11
-	stack    []frame // emitted elements, innermost last
+	buf       []byte
+	base      *url.URL
+	invalidDL map[*html.Node]bool // dl nodes that failed R10, so re-renders skip straight to unwrap
+	pending   bool                // a separator space is owed
+	boundary  bool                // the last write was a non-inline tag (or nothing): no space needed
+	content   int                 // count of non-whitespace writes, for R11
+	stack     []frame             // emitted elements, innermost last
 }
 
 type frame struct {
-	tag   atom.Atom
-	mark  mark // state before the start tag, for rollback
-	after int  // s.content right after the start tag
+	tag      atom.Atom
+	implicit bool // an <li>/<dd> opened by the sanitizer for stray list content (C-4)
+	mark     mark // state before the start tag, for rollback
+	after    int  // s.content right after the start tag
+	children int  // text runs and kept child elements so far (first-child checks)
+	dts, dds int  // kept <dt>/<dd> children (R10)
 }
 
 type mark struct {
-	n                 int
+	n, content        int
 	pending, boundary bool
 }
 
@@ -165,10 +199,36 @@ func (s *sanitizer) element(n *html.Node, m mode) {
 		s.unwrap(n, m, blockTags[tag] && !m.pre)
 		return
 	}
+	if f := s.top(); f != nil && f.implicit &&
+		(tag == atom.Li && f.tag == atom.Li || (tag == atom.Dt || tag == atom.Dd) && f.tag == atom.Dd) {
+		s.close() // a real item ends the implicit one
+	}
+	if parents, ok := requiredParent[tag]; ok && !parents[s.topTag()] { // R7
+		if !orphansToP[tag] {
+			s.unwrap(n, m, true)
+			return
+		}
+		tag = atom.P
+	}
+	switch tag {
+	case atom.Figcaption: // C-5: only as the first child of its figure
+		if s.top().children > 0 {
+			tag = atom.P
+		}
+	case atom.Caption: // C-5: only as the first child of its table
+		if s.top().children > 0 {
+			return
+		}
+	case atom.Dl:
+		if s.invalidDL[n] {
+			s.unwrap(n, m, true)
+			return
+		}
+	}
 	var href string
 	if tag == atom.A {
 		var ok bool
-		if href, ok = s.href(n); !ok { // R8
+		if href, ok = s.href(n); !ok || s.inside(atom.A) { // R8, C-1
 			s.unwrap(n, m, false)
 			return
 		}
@@ -177,9 +237,85 @@ func (s *sanitizer) element(n *html.Node, m mode) {
 		s.void(tag)
 		return
 	}
-	s.open(tag, attrs(n, tag, href))
+	if !s.prepare(tag) {
+		return
+	}
+	s.open(tag, attrs(n, tag, href), false)
+	depth := len(s.stack)
 	s.children(n, m.child(tag))
+	s.closeImplicit(depth)
+	if tag == atom.Dl {
+		if f := s.top(); f.dts == 0 || f.dds == 0 { // R10
+			s.stack = s.stack[:len(s.stack)-1]
+			s.rollback(f.mark)
+			if s.invalidDL == nil {
+				s.invalidDL = make(map[*html.Node]bool)
+			}
+			s.invalidDL[n] = true
+			s.unwrap(n, m, true)
+			return
+		}
+	}
 	s.close()
+}
+
+func (s *sanitizer) top() *frame {
+	if len(s.stack) == 0 {
+		return nil
+	}
+	return &s.stack[len(s.stack)-1]
+}
+
+func (s *sanitizer) topTag() atom.Atom {
+	if f := s.top(); f != nil {
+		return f.tag
+	}
+	return 0
+}
+
+func (s *sanitizer) inside(tag atom.Atom) bool {
+	for i := range s.stack {
+		if s.stack[i].tag == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// prepare makes the innermost frame ready to receive a child (tag 0 is
+// text): stray list content gets an implicit item, and anything a table
+// part can't contain is refused (C-4).
+func (s *sanitizer) prepare(tag atom.Atom) bool {
+	switch top := s.topTag(); top {
+	case atom.Ul, atom.Ol:
+		if tag != atom.Li {
+			s.open(atom.Li, "", true)
+		}
+	case atom.Dl:
+		if tag != atom.Dt && tag != atom.Dd {
+			s.open(atom.Dd, "", true)
+		}
+	case atom.Table, atom.Thead, atom.Tbody, atom.Tfoot, atom.Tr:
+		return tableChildren[top][tag]
+	}
+	return true
+}
+
+// closeImplicit closes the implicit frames left above depth.
+func (s *sanitizer) closeImplicit(depth int) {
+	for len(s.stack) > depth && s.top().implicit {
+		s.close()
+	}
+}
+
+// container reports whether the innermost frame only takes items
+// (lists, definition lists, table parts), so loose whitespace is dropped.
+func (s *sanitizer) container() bool {
+	switch s.topTag() {
+	case atom.Ul, atom.Ol, atom.Dl, atom.Table, atom.Thead, atom.Tbody, atom.Tfoot, atom.Tr:
+		return true
+	}
+	return false
 }
 
 func (s *sanitizer) unwrap(n *html.Node, m mode, sep bool) {
@@ -194,12 +330,17 @@ func (s *sanitizer) unwrap(n *html.Node, m mode, sep bool) {
 
 // text implements §6.4: whitespace collapsing outside pre, verbatim inside.
 func (s *sanitizer) text(t string, m mode) {
+	if s.container() {
+		if strings.TrimFunc(t, isCollapsible) == "" {
+			return // loose whitespace between items
+		}
+		if !s.prepare(0) {
+			return
+		}
+	}
 	if m.pre {
 		if e := xmlx.Text(t); e != "" {
-			s.write(e, false)
-			if strings.TrimSpace(e) != "" {
-				s.content++
-			}
+			s.writeText(e)
 		}
 		return
 	}
@@ -211,8 +352,7 @@ func (s *sanitizer) text(t string, m mode) {
 				word = t[:i]
 			}
 			if e := xmlx.Text(word); e != "" {
-				s.write(e, false)
-				s.content++
+				s.writeText(e)
 			}
 			if i < 0 {
 				return
@@ -244,42 +384,68 @@ func (s *sanitizer) write(str string, boundary bool) {
 	s.boundary = boundary
 }
 
-func (s *sanitizer) void(tag atom.Atom) {
-	s.write("<"+tag.String()+"/>", true)
-	s.content++
+// writeText appends escaped text; only non-blank text counts as content.
+func (s *sanitizer) writeText(e string) {
+	s.write(e, false)
+	if strings.TrimSpace(e) != "" {
+		s.content++
+	}
+	if f := s.top(); f != nil {
+		f.children++
+	}
 }
 
-func (s *sanitizer) open(tag atom.Atom, attrs string) {
-	mk := mark{n: len(s.buf), pending: s.pending, boundary: s.boundary}
+func (s *sanitizer) void(tag atom.Atom) {
+	if !s.prepare(tag) {
+		return
+	}
+	s.write("<"+tag.String()+"/>", true)
+	s.content++
+	if f := s.top(); f != nil {
+		f.children++
+	}
+}
+
+func (s *sanitizer) open(tag atom.Atom, attrs string, implicit bool) {
+	mk := mark{n: len(s.buf), content: s.content, pending: s.pending, boundary: s.boundary}
 	s.write("<"+tag.String()+attrs+">", !inlineTags[tag])
-	s.stack = append(s.stack, frame{tag: tag, mark: mk, after: s.content})
+	s.stack = append(s.stack, frame{tag: tag, implicit: implicit, mark: mk, after: s.content})
 }
 
 // close ends the innermost frame. An element without content is rolled back
-// (R11) unless it's a table cell. It reports whether the element was kept.
-func (s *sanitizer) close() bool {
+// (R11) unless it's a table cell.
+func (s *sanitizer) close() {
 	f := s.stack[len(s.stack)-1]
 	s.stack = s.stack[:len(s.stack)-1]
 	if s.content == f.after && !keepEmpty[f.tag] {
 		s.rollback(f.mark)
-		return false
+		return
+	}
+	if p := s.top(); p != nil {
+		p.children++
+		switch f.tag {
+		case atom.Dt:
+			p.dts++
+		case atom.Dd:
+			p.dds++
+		}
 	}
 	if inlineTags[f.tag] {
 		// The pending space carries over: "a <em>b </em>c" keeps its space.
 		s.buf = append(s.buf, "</"+f.tag.String()+">"...)
 		s.boundary = false
-		return true
+		return
 	}
 	s.pending = false
 	s.buf = append(s.buf, "</"+f.tag.String()+">"...)
 	s.boundary = true
-	return true
 }
 
 // rollback discards everything written since mk. Whitespace owed by the
 // discarded content stays owed, so "a<em> </em>b" still reads "a b".
 func (s *sanitizer) rollback(mk mark) {
 	s.buf = s.buf[:mk.n]
+	s.content = mk.content
 	s.pending = mk.pending || s.pending
 	s.boundary = mk.boundary
 }

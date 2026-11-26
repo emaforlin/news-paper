@@ -2,6 +2,7 @@ package extract
 
 import (
 	"bytes"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -75,6 +76,7 @@ func checkOutput(t *testing.T, out string, words int) {
 	if t.Failed() {
 		return
 	}
+	checkModel(t, out)
 	if n := len(strings.Fields(textOf(t, out))); n != words {
 		t.Errorf("words = %d, but textOf has %d fields: %q", words, n, out)
 	}
@@ -130,19 +132,151 @@ var fsExamples = []sanitizeCase{
 	{"empty paragraphs", `<p></p><p> </p>`, ``, 0},
 }
 
-// needsStructure lists FS examples that depend on R7/R10 (implemented in the
-// content-model pass).
-var needsStructure = map[string]bool{"orphan li": true, "dl without dd": true, "lonely figcaption": true}
-
 func TestSanitizeExamples(t *testing.T) {
-	var cases []sanitizeCase
-	for _, c := range fsExamples {
-		if !needsStructure[c.name] {
-			cases = append(cases, c)
+	runSanitizeCases(t, testBase, fsExamples)
+}
+
+// Technical spec §7.
+var clarifications = []sanitizeCase{
+	{"C-2 duplicate attribute", `<ol start="2" start="5"><li>a</li></ol>`, `<ol start="2"><li>a</li></ol>`, 1},
+	{"C-3 invalid start", `<ol start="x"><li>a</li></ol>`, `<ol><li>a</li></ol>`, 1},
+	{"C-4 stray text in ul", `<ul>x<li>a</li></ul>`, `<ul><li>x</li><li>a</li></ul>`, 2},
+	{"C-4 stray block in ul", `<ul><p>p</p></ul>`, `<ul><li><p>p</p></li></ul>`, 1},
+	{"C-5 late figcaption", `<figure><p>a</p><figcaption>c</figcaption></figure>`, `<figure><p>a</p><p>c</p></figure>`, 2},
+	{"C-5 late caption", `<table><tr><td>a</td></tr><caption>c</caption></table>`, `<table><tbody><tr><td>a</td></tr></tbody></table>`, 1},
+	{"C-6 head and title", `<html><head><title>T</title></head><body><p>b</p></body></html>`, `<p>b</p>`, 1},
+	{"C-7 no separators in pre", `<pre>a<div>b</div></pre>`, `<pre>ab</pre>`, 1},
+	{"C-8 div separators", `<div>a</div><div>b</div>`, `a b`, 2},
+	{"C-8 span no separators", `<span>a</span><span>b</span>`, `ab`, 1},
+	{"C-9 inline sub", `<p>H<sub>2</sub>O</p>`, `<p>H<sub>2</sub>O</p>`, 1},
+}
+
+func TestSanitizeClarifications(t *testing.T) {
+	runSanitizeCases(t, testBase, clarifications)
+
+	// C-1 and C-4 (tables) need trees html.Parse never builds.
+	t.Run("C-1 nested a", func(t *testing.T) {
+		outer := elem("a", attr("href", "/x"), text("1 "), elem("a", attr("href", "/y"), text("2")))
+		got, words := Sanitize(elem("div", outer), testBase)
+		if want := `<a href="https://example.com/x">1 2</a>`; got != want || words != 2 {
+			t.Errorf("got %q (%d words), want %q", got, words, want)
+		}
+		checkOutput(t, got, words)
+	})
+	t.Run("C-4 stray table content", func(t *testing.T) {
+		row := elem("tr", text("loose"), elem("div", text("z")), elem("td", text("a")), elem("br"))
+		table := elem("table", text("x"), elem("p", text("y")), row, elem("tbody", elem("td", text("b"))))
+		got, words := Sanitize(elem("div", table), testBase)
+		if want := `<table><tr><td>a</td></tr></table>`; got != want || words != 1 {
+			t.Errorf("got %q (%d words), want %q", got, words, want)
+		}
+		checkOutput(t, got, words)
+	})
+}
+
+// Structure rules (R7, R10, C-4, C-5) beyond the spec examples.
+func TestSanitizeStructure(t *testing.T) {
+	runSanitizeCases(t, testBase, []sanitizeCase{
+		{"orphan dt and dd", `<div><dt>t</dt><dd>d</dd></div>`, `<p>t</p><p>d</p>`, 2},
+		{"dd outside dl", `<blockquote><dd>d</dd></blockquote>`, `<blockquote><p>d</p></blockquote>`, 1},
+		{"dl with only dd", `<dl><dd>d</dd></dl>`, `<p>d</p>`, 1},
+		{"dl with stray text", `<dl><dt>t</dt>stray</dl>`, `<dl><dt>t</dt><dd>stray</dd></dl>`, 2},
+		{"dl with only text", `<dl>text</dl>`, `text`, 1},
+		{"dl implicit dd closed by dt", `<dl>x<dt>t</dt><dd>d</dd></dl>`, `<dl><dd>x</dd><dt>t</dt><dd>d</dd></dl>`, 3},
+		{"nested invalid dls", `<dl><dd><dl><dt>a</dt></dl></dd></dl>`, `<p>a</p>`, 1},
+		{"invalid dl re-rendered once", `<dl><blockquote><dl><dt>a</dt></dl></blockquote></dl>`, `<blockquote><p>a</p></blockquote>`, 1},
+		{"empty dl", `<dl><dt></dt><dd> </dd></dl>`, ``, 0},
+		{"stray runs share one li", `<ul> <li>a</li> x <b>y</b> <li>b</li></ul>`, `<ul><li>a</li><li>x <b>y</b></li><li>b</li></ul>`, 4},
+		{"br in ul", `<ul><br></ul>`, `<ul><li><br/></li></ul>`, 0},
+		{"li inside unwrapped div", `<ul><div><li>a</li></div></ul>`, `<ul><li>a</li></ul>`, 1},
+		{"ol with dd", `<ol><dd>x</dd></ol>`, `<ol><li><p>x</p></li></ol>`, 1},
+		{"blank implicit li dropped", "<ul>\x0b<li>a</li></ul>", `<ul><li>a</li></ul>`, 1},
+		{"li in phrasing", `<em><ul><li>a</li><li>b</li></ul></em>`, `<em> a b</em>`, 2},
+		{"first figcaption kept", `<figure><figcaption>c</figcaption><p>a</p></figure>`, `<figure><figcaption>c</figcaption><p>a</p></figure>`, 2},
+		{"figcaption after text", `<figure>t<figcaption>c</figcaption></figure>`, `<figure>t<p>c</p></figure>`, 2},
+		{"image-only figure", `<figure><img src="x"><figcaption>c</figcaption></figure>`, `<figure><figcaption>c</figcaption></figure>`, 1},
+		{"thead and tfoot", `<table><thead><tr><th>h</th></tr></thead><tbody><tr><td>b</td></tr></tbody><tfoot><tr><td>f</td></tr></tfoot></table>`,
+			`<table><thead><tr><th>h</th></tr></thead><tbody><tr><td>b</td></tr></tbody><tfoot><tr><td>f</td></tr></tfoot></table>`, 3},
+		{"caption first", `<table><caption>c</caption><tr><td>a</td></tr></table>`, `<table><caption>c</caption><tbody><tr><td>a</td></tr></tbody></table>`, 2},
+		{"empty table dropped", `<table><tr><td></td></tr></table>`, ``, 0},
+		{"colgroup unwrapped", `<table><colgroup><col></colgroup><tr><td>a</td></tr></table>`, `<table><tbody><tr><td>a</td></tr></tbody></table>`, 1},
+		{"nested list", `<ul><li>a<ul><li>b</li></ul></li></ul>`, `<ul><li>a<ul><li>b</li></ul></li></ul>`, 2},
+	})
+}
+
+// Hostile inputs only need to satisfy the output properties.
+var hostile = []string{
+	"<p>\x00\x01\x08\x0b\x0c\x1f\x7f\ufffe\uffff text</p>",
+	"<p>\xc3\x28 \xed\xa0\x80 \xf0\x28\x8c\x28</p>",
+	`<p onmouseover="x()" ONCLICK="y()">a</p><a href="JAVASCRIPT:alert(1)">j</a><a href=" java&#09;script:x">k</a>`,
+	`<svg><foreignObject><p>x</p></foreignObject></svg><math><mtext><p>y</p></mtext></math>`,
+	`<table><td>a<table><td>b</td></table></td><caption>c</caption><caption>d</caption></table>`,
+	`<ul><li><dl><dt>a<ul>x</ul></dt></dl></li></ul><dl><figure><figcaption>z</figcaption></figure></dl>`,
+	`<em><figure><figcaption>c</figcaption></figure><table><caption>q</caption></table></em>`,
+	`<a href="/a"><table><tr><td><a href="/b">x</a></td></tr></table></a>`,
+	`<pre><p>a</p><hr><ul><li>b</li></ul></pre>`,
+	`<h2><h3>a</h3></h2><h6><dl><dt>x</dt><dd>y</dd></dl></h6>`,
+	`<ol start="99999999999999999999"><li>a</li></ol><td colspan="-1">x</td>`,
+	`<abbr title="&#0;&#x1;">a</abbr><q cite="javascript:x">q</q>`,
+	// html.Parse refuses more than 512 open elements; deeper trees are
+	// built by hand in TestSanitizeDeepTree.
+	strings.Repeat("<div>", 500) + "deep" + strings.Repeat("</div>", 500),
+	strings.Repeat("<em>", 500) + "deep" + strings.Repeat("</em>", 500),
+	strings.Repeat("<dl><dd>", 250) + "x" + strings.Repeat("</dd></dl>", 250),
+	strings.Repeat("<ul>", 500) + "x" + strings.Repeat("</ul>", 500),
+}
+
+func TestSanitizeOutputProperties(t *testing.T) {
+	var inputs []string
+	for _, group := range [][]sanitizeCase{fsExamples, clarifications} {
+		for _, c := range group {
+			inputs = append(inputs, c.in)
 		}
 	}
-	runSanitizeCases(t, testBase, cases)
+	inputs = append(inputs, hostile...)
+	for i, in := range inputs {
+		for _, base := range []*url.URL{testBase, nil} {
+			doc, err := html.Parse(strings.NewReader(in))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, words := Sanitize(doc, base)
+			t.Run(fmt.Sprintf("input %d", i), func(t *testing.T) { checkOutput(t, out, words) })
+		}
+	}
 }
+
+func TestSanitizeDeepTree(t *testing.T) {
+	for _, tag := range []string{"div", "em", "blockquote"} {
+		n := text("deep")
+		for range 10000 {
+			n = elem(tag, n)
+		}
+		out, words := Sanitize(elem("body", n), testBase)
+		if words != 1 {
+			t.Errorf("%s: words = %d", tag, words)
+		}
+		checkOutput(t, out, words)
+	}
+}
+
+func elem(tag string, kids ...*html.Node) *html.Node {
+	n := &html.Node{Type: html.ElementNode, Data: tag, DataAtom: atom.Lookup([]byte(tag))}
+	for _, k := range kids {
+		if k.Type == html.ErrorNode { // attribute carrier, see attr
+			n.Attr = append(n.Attr, k.Attr...)
+			continue
+		}
+		n.AppendChild(k)
+	}
+	return n
+}
+
+func attr(key, val string) *html.Node {
+	return &html.Node{Type: html.ErrorNode, Attr: []html.Attribute{{Key: key, Val: val}}}
+}
+
+func text(s string) *html.Node { return &html.Node{Type: html.TextNode, Data: s} }
 
 func TestSanitizeRules(t *testing.T) {
 	runSanitizeCases(t, testBase, []sanitizeCase{
