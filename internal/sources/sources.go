@@ -36,7 +36,8 @@ type Config struct {
 	Feeds       []FeedConfig   `json:"feeds"`
 }
 
-// HNConfig configures the Hacker News source; zero fields take defaults.
+// HNConfig configures the Hacker News source; zero fields take defaults and a
+// negative MinPoints means no minimum.
 type HNConfig struct {
 	Enabled   bool   `json:"enabled"`
 	APIBase   string `json:"api_base"`

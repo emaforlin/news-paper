@@ -16,6 +16,9 @@ const (
 	DefaultHNAPIBase   = "https://hn.algolia.com/api/v1"
 	DefaultHNMinPoints = 100
 	DefaultHNLimit     = 60
+	// NoMinPoints disables the score filter: a zero MinPoints means the
+	// default, so "no minimum" needs its own value.
+	NoMinPoints = -1
 
 	hnWindow   = 24 * time.Hour
 	hnItemURL  = "https://news.ycombinator.com/item?id="
@@ -24,7 +27,7 @@ const (
 
 // HackerNews lists stories from the last 24 h (ending at Now) with at least
 // MinPoints, through the Algolia search API: one request. Zero fields take
-// the Default* values.
+// the Default* values; a negative MinPoints (NoMinPoints) means no minimum.
 type HackerNews struct {
 	APIBase   string
 	MinPoints int
@@ -50,8 +53,11 @@ func (h *HackerNews) searchURL() string {
 	if base == "" {
 		base = DefaultHNAPIBase
 	}
-	if minPoints <= 0 {
+	switch {
+	case minPoints == 0:
 		minPoints = DefaultHNMinPoints
+	case minPoints < 0:
+		minPoints = 0
 	}
 	if limit <= 0 {
 		limit = DefaultHNLimit

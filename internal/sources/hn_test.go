@@ -20,6 +20,8 @@ func TestHNQuery(t *testing.T) {
 	}{
 		{"defaults", HackerNews{}, "hitsPerPage=60&numericFilters=created_at_i%3E1795596000%2Cpoints%3E%3D100&tags=story"},
 		{"custom", HackerNews{MinPoints: 250, Limit: 5}, "hitsPerPage=5&numericFilters=created_at_i%3E1795596000%2Cpoints%3E%3D250&tags=story"},
+		{"no minimum", HackerNews{MinPoints: NoMinPoints}, "hitsPerPage=60&numericFilters=created_at_i%3E1795596000%2Cpoints%3E%3D0&tags=story"},
+		{"any negative", HackerNews{MinPoints: -50}, "hitsPerPage=60&numericFilters=created_at_i%3E1795596000%2Cpoints%3E%3D0&tags=story"},
 		{"trailing slash", HackerNews{APIBase: "/"}, "hitsPerPage=60&numericFilters=created_at_i%3E1795596000%2Cpoints%3E%3D100&tags=story"},
 	}
 	for _, tt := range tests {
