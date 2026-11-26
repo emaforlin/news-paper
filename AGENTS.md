@@ -24,7 +24,7 @@ make race                       # go test -race ./...
 # extract: fuzz the sanitizer, and run it over a real corpus (optionally dumping an EPUB)
 go test -run='^$' -fuzz=FuzzSanitize -fuzztime=60s ./internal/extract
 EXTRACT_CORPUS=<dir> EXTRACT_EPUB_OUT=$PWD/dist go test -run TestCorpus ./internal/extract
-epubcheck dist/corpus.epub
+for f in dist/corpus-*.epub; do epubcheck "$f"; done
 
 go run ./cmd/news-paper -config config.json sources                      # today's candidates (TSV)
 go run ./cmd/news-paper -config config.json extract <URL>                # debug extraction for one URL

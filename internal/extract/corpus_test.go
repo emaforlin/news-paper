@@ -1,8 +1,10 @@
 package extract
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +23,9 @@ import (
 //
 //	EXTRACT_CORPUS=<dir> go test -run TestCorpus ./internal/extract
 //
-// With EXTRACT_EPUB_OUT=<absolute dir> it also writes <dir>/corpus.epub with the
-// readability articles, to be checked with `epubcheck`.
+// With EXTRACT_EPUB_OUT=<absolute dir> it also writes the readability
+// articles to <dir>/corpus-N.epub (99 per book, the epub limit), to be
+// checked with `epubcheck`.
 func TestCorpus(t *testing.T) {
 	dir := os.Getenv("EXTRACT_CORPUS")
 	if dir == "" {
@@ -60,7 +63,7 @@ func TestCorpus(t *testing.T) {
 			}
 			out, words := Sanitize(art.Node, base)
 			checkOutput(t, out, words)
-			if words > 0 && len(articles) < 99 && !t.Failed() {
+			if words > 0 && !t.Failed() {
 				title := strings.TrimSpace(art.Title)
 				if title == "" {
 					title = name
@@ -75,19 +78,21 @@ func TestCorpus(t *testing.T) {
 	}
 
 	if out := os.Getenv("EXTRACT_EPUB_OUT"); out != "" {
-		b, err := epub.Bytes(epub.Edition{
-			Title:    "Corpus",
-			Date:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-			Language: "en",
-			Articles: articles,
-		})
-		if err != nil {
-			t.Fatalf("epub: %v", err)
+		for n, chunk := range slices.Collect(slices.Chunk(articles, 99)) {
+			b, err := epub.Bytes(epub.Edition{
+				Title:    "Corpus",
+				Date:     time.Date(2026, 1, 1+n, 0, 0, 0, 0, time.UTC),
+				Language: "en",
+				Articles: chunk,
+			})
+			if err != nil {
+				t.Fatalf("epub: %v", err)
+			}
+			path := filepath.Join(out, fmt.Sprintf("corpus-%d.epub", n+1))
+			if err := os.WriteFile(path, b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("wrote %s with %d articles", path, len(chunk))
 		}
-		path := filepath.Join(out, "corpus.epub")
-		if err := os.WriteFile(path, b, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("wrote %s with %d articles", path, len(articles))
 	}
 }

@@ -135,11 +135,12 @@ type sanitizer struct {
 
 type frame struct {
 	tag      atom.Atom
-	implicit bool // an <li>/<dd> opened by the sanitizer for stray list content (C-4)
-	mark     mark // state before the start tag, for rollback
-	after    int  // s.content right after the start tag
-	children int  // text runs and kept child elements so far (first-child checks)
-	dts, dds int  // kept <dt>/<dd> children (R10)
+	implicit bool      // an <li>/<dd> opened by the sanitizer for stray list content (C-4)
+	mark     mark      // state before the start tag, for rollback
+	after    int       // s.content right after the start tag
+	children int       // text runs and kept child elements so far (first-child checks)
+	first    atom.Atom // first and last kept child elements (R10)
+	last     atom.Atom
 }
 
 type mark struct {
@@ -245,7 +246,9 @@ func (s *sanitizer) element(n *html.Node, m mode) {
 	s.children(n, m.child(tag))
 	s.closeImplicit(depth)
 	if tag == atom.Dl {
-		if f := s.top(); f.dts == 0 || f.dds == 0 { // R10
+		// R10: a dl must be groups of dt+ dd+, i.e. start with dt and end with dd
+		// (its children are only ever dt/dd, see prepare).
+		if f := s.top(); f.first != atom.Dt || f.last != atom.Dd {
 			s.stack = s.stack[:len(s.stack)-1]
 			s.rollback(f.mark)
 			if s.invalidDL == nil {
@@ -423,12 +426,10 @@ func (s *sanitizer) close() {
 	}
 	if p := s.top(); p != nil {
 		p.children++
-		switch f.tag {
-		case atom.Dt:
-			p.dts++
-		case atom.Dd:
-			p.dds++
+		if p.first == 0 {
+			p.first = f.tag
 		}
+		p.last = f.tag
 	}
 	if inlineTags[f.tag] {
 		// The pending space carries over: "a <em>b </em>c" keeps its space.

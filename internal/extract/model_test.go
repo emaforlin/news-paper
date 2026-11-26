@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -199,8 +200,8 @@ func modelProblems(root *xnode) []string {
 				}
 			}
 		}
-		if n.name == "dl" && (!hasKid(n, "dt") || !hasKid(n, "dd")) {
-			add("<dl> without both <dt> and <dd>")
+		if n.name == "dl" && !dlGroupsRe.MatchString(kidNames(n)) {
+			add("<dl> children %q are not groups of (dt+ dd+)+", kidNames(n))
 		}
 		if (n.name == "figcaption" || n.name == "caption") && firstKid(parent) != n {
 			add("<%s> is not the first child of <%s>", n.name, parent.name)
@@ -249,8 +250,19 @@ func badAttr(key, v string) string {
 	return ""
 }
 
-func hasKid(n *xnode, name string) bool {
-	return slices.ContainsFunc(n.kids, func(k *xnode) bool { return k.name == name })
+// dlGroupsRe is the HTML content model of <dl>: one or more groups of
+// dt+ followed by dd+.
+var dlGroupsRe = regexp.MustCompile(`^((dt )+(dd )+)+$`)
+
+// kidNames lists n's element children, each followed by a space.
+func kidNames(n *xnode) string {
+	var b strings.Builder
+	for _, k := range n.kids {
+		if k.name != "" {
+			b.WriteString(k.name + " ")
+		}
+	}
+	return b.String()
 }
 
 // firstKid is the first child that is an element or non-blank text.
